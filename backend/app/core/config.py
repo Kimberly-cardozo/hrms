@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     policy_upload_dir: str = "/app/storage/hr-policies"
     profile_photo_upload_dir: str = "/app/storage/profile-photos"
     employee_document_upload_dir: str = "/app/storage/employee-documents"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
 
 
 settings = Settings()

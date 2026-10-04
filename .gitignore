@@ -41,3 +41,12 @@ backend/storage/employee-documents/
 backend/storage/profile-photos/
 **/__pycache__/
 *.pyc
+
+
+backend/app/__pycache__/
+backend/app/api/__pycache__/
+backend/app/db/__pycache__/
+backend/app/models/__pycache__/
+backend/app/repositories/__pycache__/
+backend/app/schemas/__pycache__/
+backend/app/services/__pycache__/

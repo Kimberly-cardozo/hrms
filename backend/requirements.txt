@@ -11,6 +11,8 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.20
 structlog==25.4.0
+openai>=1.102.0,<3.0.0
+sqlglot>=26.0,<30.0
 faker==37.6.0
 pypdf==5.1.0
 reportlab==4.2.5

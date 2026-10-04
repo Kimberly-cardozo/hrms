@@ -354,6 +354,35 @@ export type ApiResult<T> = {
   body: T;
 };
 
+export type SQLAssistantRow = Record<string, string | number | boolean | null>;
+
+export type SQLAssistantResponse = {
+  answer: string;
+  sql: string | null;
+  rows: SQLAssistantRow[];
+  truncated: boolean;
+};
+
+export async function askSQLAssistant(
+  token: string,
+  message: string,
+  history: Array<{ role: "user" | "assistant"; content: string }>
+): Promise<ApiResult<ApiEnvelope<SQLAssistantResponse> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/sql`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ message, history }),
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
 export async function login(email: string, password: string): Promise<LoginResponse> {
   const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
     method: "POST",
