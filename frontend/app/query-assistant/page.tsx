@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bot, LoaderCircle, Send, Sparkles, UserRound } from "lucide-react";
+import { Bot, Info, LoaderCircle, Send, Sparkles, UserRound } from "lucide-react";
 
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
@@ -116,7 +116,17 @@ export default function QueryAssistantPage() {
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200/80">HRMS data</p>
-              <h1 className="text-xl font-semibold text-white">Query Assistant</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-semibold text-white">Query Assistant</h1>
+                <button
+                  type="button"
+                  title="Ask questions about HRMS data, employees, projects, skills, leave, and tickets. Access depends on your role."
+                  aria-label="About Query Assistant"
+                  className="text-slate-500 transition hover:text-cyan-200 focus-visible:text-cyan-200"
+                >
+                  <Info className="h-4 w-4" />
+                </button>
+              </div>
             </div>
           </header>
 

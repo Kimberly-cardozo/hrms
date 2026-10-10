@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bot, LoaderCircle, Send, UserRound, WandSparkles } from "lucide-react";
+import { Bot, Info, LoaderCircle, Send, UserRound, WandSparkles } from "lucide-react";
 
 import { ActionResultCard } from "@/components/ai/action-result-card";
 import { Sidebar } from "@/components/layout/sidebar";
@@ -200,7 +200,17 @@ export default function AutomateHRTasksPage() {
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-200/80">HR operations</p>
-              <h1 className="text-xl font-semibold text-white">Automate HR Tasks</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-semibold text-white">Automate HR Tasks</h1>
+                <button
+                  type="button"
+                  title="Request leave, create tickets, and perform role-authorized HR actions. Changes are sent to existing HRMS APIs and require your confirmation."
+                  aria-label="About Automate HR Tasks"
+                  className="text-slate-500 transition hover:text-emerald-200 focus-visible:text-emerald-200"
+                >
+                  <Info className="h-4 w-4" />
+                </button>
+              </div>
             </div>
           </header>
 
