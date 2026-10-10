@@ -363,6 +363,21 @@ export type SQLAssistantResponse = {
   truncated: boolean;
 };
 
+export type HRActionResult = {
+  status: "confirmation_required" | "completed" | "handoff" | "denied" | "failed" | "cancelled";
+  tool_name: string;
+  label: string;
+  summary: string;
+  confirmation_token?: string;
+  target?: string;
+  result?: unknown;
+};
+
+export type HRActionAssistantResponse = {
+  answer: string;
+  action: HRActionResult | null;
+};
+
 export async function askSQLAssistant(
   token: string,
   message: string,
@@ -375,6 +390,29 @@ export async function askSQLAssistant(
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ message, history }),
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
+export async function askHRActionAssistant(
+  token: string,
+  request: {
+    message?: string;
+    history?: Array<{ role: "user" | "assistant"; content: string }>;
+    confirmation_token?: string;
+  }
+): Promise<ApiResult<ApiEnvelope<HRActionAssistantResponse> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(request),
   });
   return {
     ok: response.ok,

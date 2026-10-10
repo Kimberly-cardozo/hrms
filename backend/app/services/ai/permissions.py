@@ -85,6 +85,47 @@ SQL_TABLES_BY_ROLE: dict[Role, frozenset[str]] = {
     role: frozenset(SQL_ALLOWED_TABLES) for role in Role
 }
 
+ACTION_COMMON_TOOLS = frozenset(
+    {
+        "apply_leave",
+        "check_leave_balance",
+        "check_my_leave_requests",
+        "create_ticket",
+        "check_my_tickets",
+        "list_hr_policies",
+        "handoff_query_assistant",
+        "handoff_policy_assistant",
+    }
+)
+
+ACTION_MANAGER_TOOLS = frozenset(
+    {
+        "list_pending_leave_requests",
+        "approve_leave",
+        "reject_leave",
+        "assign_ticket",
+        "update_ticket_status",
+        "create_announcement",
+        "assign_employee_project",
+    }
+)
+
+ACTION_ADMIN_TOOLS = frozenset(
+    {
+        "create_project",
+        "deactivate_employee",
+        "reactivate_employee",
+        "upload_hr_policy",
+        "summarize_hr_policy",
+    }
+)
+
+ACTION_TOOLS_BY_ROLE: dict[Role, frozenset[str]] = {
+    Role.EMPLOYEE: ACTION_COMMON_TOOLS,
+    Role.MANAGER: ACTION_COMMON_TOOLS | ACTION_MANAGER_TOOLS,
+    Role.ADMIN: ACTION_COMMON_TOOLS | ACTION_MANAGER_TOOLS | ACTION_ADMIN_TOOLS,
+}
+
 SHARED_CATALOG_TABLES = frozenset({"projects", "departments", "skills"})
 
 SQL_SCHEMA_RELATIONSHIPS = (
@@ -116,9 +157,6 @@ SQL_ENUM_COLUMN_VALUES = {
 }
 
 SQL_BOOLEAN_COLUMNS = ("job_history.is_current", "leave_requests.is_half_day")
-SQL_DENIAL_CODES = frozenset(
-    {"OTHER_EMPLOYEE_INFO", "PAYROLL_DATA", "RESTRICTED_FIELD", "OUT_OF_SCOPE"}
-)
 SQL_DENIAL_CODES = frozenset(
     {"OTHER_EMPLOYEE_INFO", "PAYROLL_DATA", "RESTRICTED_FIELD", "OUT_OF_SCOPE"}
 )

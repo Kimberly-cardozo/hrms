@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, CalendarClock, CalendarDays, CalendarPlus2, CircleDollarSign, FileText, LayoutDashboard, ScrollText, Sparkles, Ticket, UserCircle2, Users, Vote } from "lucide-react";
+import { Bell, CalendarClock, CalendarDays, CalendarPlus2, CircleDollarSign, FileText, LayoutDashboard, ListChecks, ScrollText, Sparkles, Ticket, UserCircle2, Users, Vote } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -17,6 +17,7 @@ const navItems = [
   { icon: Bell, label: "Announcements", href: "/announcements" },
   { icon: ScrollText, label: "HR Policies", href: "/hr-policies" },
   { icon: Sparkles, label: "Query Assistant", href: "/query-assistant" },
+  { icon: ListChecks, label: "Automate HR Tasks", href: "/automate-hr-tasks" },
   { icon: Vote, label: "Polls", href: "/polls" },
   { icon: CalendarDays, label: "Team Calendar", href: "/team-calendar" },
   { icon: Ticket, label: "Tickets", href: "/tickets" },

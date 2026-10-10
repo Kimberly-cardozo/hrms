@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     employee_document_upload_dir: str = "/app/storage/employee-documents"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    internal_api_base_url: str = "http://127.0.0.1:8000"
 
 
 settings = Settings()
