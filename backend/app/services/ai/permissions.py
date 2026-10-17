@@ -25,6 +25,7 @@ SQL_ALLOWED_TABLES = (
     "leave_balances",
     "leave_requests",
     "tickets",
+    "payroll_records",
 )
 
 SQL_BLOCKED_COLUMNS = frozenset(
@@ -34,9 +35,12 @@ SQL_BLOCKED_COLUMNS = frozenset(
         "bank_account_name",
         "bank_branch",
         "bank_ifsc",
+        "pan",
         "pan_number",
         "pan_name",
         "pan_dob",
+        "pf_uan",
+        "esi_no",
         "date_of_birth",
         "current_salary_usd",
         "profile_photo_path",
@@ -54,7 +58,7 @@ class SQLRolePermissions:
     employee_skill_search_scope: RecordScope
     leave_data_scope: RecordScope
     view_raw_sql: bool
-    payroll_access: Literal["blocked"] = "blocked"
+    payroll_access: RecordScope
 
 
 SQL_ACCESS_CONTROL_MATRIX: dict[Role, SQLRolePermissions] = {
@@ -64,6 +68,7 @@ SQL_ACCESS_CONTROL_MATRIX: dict[Role, SQLRolePermissions] = {
         employee_skill_search_scope="self",
         leave_data_scope="self",
         view_raw_sql=False,
+        payroll_access="self",
     ),
     Role.MANAGER: SQLRolePermissions(
         row_scope="team",
@@ -71,6 +76,7 @@ SQL_ACCESS_CONTROL_MATRIX: dict[Role, SQLRolePermissions] = {
         employee_skill_search_scope="team",
         leave_data_scope="team",
         view_raw_sql=True,
+        payroll_access="team",
     ),
     Role.ADMIN: SQLRolePermissions(
         row_scope="all",
@@ -78,6 +84,7 @@ SQL_ACCESS_CONTROL_MATRIX: dict[Role, SQLRolePermissions] = {
         employee_skill_search_scope="all",
         leave_data_scope="all",
         view_raw_sql=True,
+        payroll_access="all",
     ),
 }
 
@@ -140,6 +147,7 @@ SQL_SCHEMA_RELATIONSHIPS = (
     "leave_requests.employee_id = employees.id",
     "tickets.employee_id = employees.id",
     "tickets.assignee_id = employees.id",
+    "payroll_records.employee_id = employees.id",
 )
 
 SQL_ENUM_COLUMN_VALUES = {
@@ -168,17 +176,17 @@ def sql_role_permissions(role: Role) -> SQLRolePermissions:
 
 def role_scope_description(role: Role) -> str:
     if role == Role.ADMIN:
-        return (
-            "Admins may query all rows in the allowed HR tables, except blocked payroll and identity fields."
-        )
+        return "Admins may query all rows in allowed HR tables, including payroll amount fields, except blocked bank, PAN, password, and tax identifiers."
     if role == Role.MANAGER:
         return (
             "Managers may query their own and direct-report rows for employee, project assignment, "
-            "skill, leave, job-history, and ticket data. Project, department, and skill catalogs are shared."
+            "skill, leave, job-history, ticket, and payroll data. Payroll is limited to the manager and direct reports. "
+            "Project, department, and skill catalogs are shared."
         )
     return (
         "Employees may query only their own employee, project assignment, skill, leave, job-history, "
-        "and ticket records. Project, department, and skill catalogs are shared. Employee skill searches "
+        "ticket, and own payroll records. Payroll is limited to the signed-in employee. Project, department, "
+        "and skill catalogs are shared. Employee skill searches "
         "must be limited to the signed-in employee."
     )
 
@@ -211,6 +219,8 @@ def row_scope_clause(table: str, role: Role, employee_id: int) -> str | None:
         scope = permissions.employee_skill_search_scope
     elif table in {"leave_balances", "leave_requests"}:
         scope = permissions.leave_data_scope
+    elif table == "payroll_records":
+        scope = permissions.payroll_access
     else:
         scope = permissions.row_scope
     if scope == "all":
@@ -242,7 +252,11 @@ def permission_denial_message(code: str, role: Role) -> str:
     if code == "RESTRICTED_FIELD":
         return "The requested fields cannot be accessed by the SQL assistant for any role."
     if code == "PAYROLL_DATA":
-        return "The SQL assistant does not have access to payroll data for any role."
+        if role == Role.EMPLOYEE:
+            return "You may access your own payroll records only, not another employee's payroll."
+        if role == Role.MANAGER:
+            return "You may access payroll records for yourself and your direct reports only."
+        return "That payroll request uses fields outside the SQL assistant's allowed payroll schema."
     if code == "OTHER_EMPLOYEE_INFO":
         if role == Role.EMPLOYEE:
             return "You do not have permission to view another employee's information. You can ask about your own records."
@@ -260,7 +274,11 @@ def guardrail_denial_message(code: str, role: Role) -> str:
     if code == "RESTRICTED_FIELD":
         return "The requested fields cannot be accessed by the SQL assistant for any role."
     if code == "PAYROLL_DATA":
-        return "The SQL assistant does not have access to payroll data for any role."
+        if role == Role.EMPLOYEE:
+            return "You may view your own payroll records only."
+        if role == Role.MANAGER:
+            return "You may view payroll records for yourself and your direct reports only."
+        return "Payroll access is limited to allowed payroll fields; bank, PAN, password, and tax identifiers remain blocked."
     return permission_denial_message(code, role)
 
 

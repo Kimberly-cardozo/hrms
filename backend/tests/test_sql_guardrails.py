@@ -39,7 +39,7 @@ class SQLGuardrailsTests(unittest.TestCase):
         try:
             connection.executescript(
                 """
-                CREATE TABLE employees (id INTEGER PRIMARY KEY, manager_id INTEGER, name TEXT, hashed_password TEXT);
+                CREATE TABLE employees (id INTEGER PRIMARY KEY, manager_id INTEGER, name TEXT, hashed_password TEXT, current_salary_usd NUMERIC);
                 CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT);
                 CREATE TABLE employee_projects (id INTEGER PRIMARY KEY, employee_id INTEGER, project_id INTEGER);
                 CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT);
@@ -49,7 +49,8 @@ class SQLGuardrailsTests(unittest.TestCase):
                 CREATE TABLE leave_balances (id INTEGER PRIMARY KEY, employee_id INTEGER, remaining REAL);
                 CREATE TABLE leave_requests (id INTEGER PRIMARY KEY, employee_id INTEGER, status TEXT);
                 CREATE TABLE tickets (id INTEGER PRIMARY KEY, employee_id INTEGER, assignee_id INTEGER, title TEXT);
-                INSERT INTO employees VALUES (1, NULL, 'Manager', 'secret'), (2, 1, 'Report', 'secret'), (3, NULL, 'Other', 'secret');
+                CREATE TABLE payroll_records (id INTEGER PRIMARY KEY, employee_id INTEGER, gross REAL, net REAL, pan TEXT, pf_uan TEXT, esi_no TEXT);
+                INSERT INTO employees VALUES (1, NULL, 'Manager', 'secret', 100000), (2, 1, 'Report', 'secret', 80000), (3, NULL, 'Other', 'secret', 90000);
                 INSERT INTO projects VALUES (1, 'Alpha');
                 INSERT INTO employee_projects VALUES (1, 2, 1), (2, 3, 1);
                 INSERT INTO departments VALUES (1, 'Engineering');
@@ -59,6 +60,7 @@ class SQLGuardrailsTests(unittest.TestCase):
                 INSERT INTO leave_balances VALUES (1, 2, 4), (2, 3, 9);
                 INSERT INTO leave_requests VALUES (1, 2, 'PENDING'), (2, 3, 'APPROVED');
                 INSERT INTO tickets VALUES (1, 2, 1, 'Report ticket'), (2, 3, NULL, 'Other ticket');
+                INSERT INTO payroll_records VALUES (1, 2, 80000, 70000, 'PAN2', 'UAN2', 'ESI2'), (2, 3, 90000, 80000, 'PAN3', 'UAN3', 'ESI3'), (3, 1, 100000, 90000, 'PAN1', 'UAN1', 'ESI1');
                 """
             )
         finally:
@@ -88,15 +90,34 @@ class SQLGuardrailsTests(unittest.TestCase):
     def test_scoped_schema_hides_sensitive_columns(self):
         schema = get_scoped_schema(self.database_url, 1, Role.ADMIN)
         self.assertIn("employees(id, manager_id, name)", schema)
+        self.assertIn("payroll_records(id, employee_id, gross, net)", schema)
         self.assertNotIn("hashed_password", schema)
+        for blocked_column in ("pan", "pf_uan", "esi_no", "bank_account_number"):
+            self.assertNotIn(blocked_column, schema)
+
+    def test_payroll_rows_follow_employee_manager_and_admin_scopes(self):
+        query = "SELECT employee_id, gross, net FROM payroll_records ORDER BY employee_id"
+        employee_rows, _ = execute_scoped_select(self.database_url, 2, Role.EMPLOYEE, query)
+        manager_rows, _ = execute_scoped_select(self.database_url, 1, Role.MANAGER, query)
+        admin_rows, _ = execute_scoped_select(self.database_url, 1, Role.ADMIN, query)
+        self.assertEqual([row["employee_id"] for row in employee_rows], [2])
+        self.assertEqual([row["employee_id"] for row in manager_rows], [1, 2])
+        self.assertEqual([row["employee_id"] for row in admin_rows], [1, 2, 3])
+
+    def test_current_salary_field_remains_blocked_for_all_roles(self):
+        schema = get_scoped_schema(self.database_url, 1, Role.ADMIN)
+        self.assertNotIn("current_salary_usd", schema)
 
     def test_write_and_multiple_statements_are_rejected(self):
         for sql in (
             "DELETE FROM employees",
             "SELECT 1; SELECT 2",
-            "SELECT id FROM payroll_records",
             "SELECT * FROM main.employees",
             "SELECT hashed_password FROM employees",
+            "SELECT pan FROM payroll_records",
+            "SELECT pf_uan FROM payroll_records",
+            "SELECT esi_no FROM payroll_records",
+            "SELECT current_salary_usd FROM employees",
             "SELECT id FROM employees WHERE EXISTS (SELECT 1 FROM other_table)",
         ):
             with self.subTest(sql=sql), self.assertRaises(SQLGuardrailError):
@@ -133,6 +154,19 @@ class SQLGuardrailsTests(unittest.TestCase):
         self.assertIn("Use IS NULL or IS NOT NULL", prompt)
         self.assertIn("use 0 for false and 1 for true", prompt)
 
+    def test_sql_prompt_describes_role_scoped_payroll_access(self):
+        employee_prompt = _build_system_prompt(Role.EMPLOYEE, "payroll_records(employee_id, gross)")
+        manager_prompt = _build_system_prompt(Role.MANAGER, "payroll_records(employee_id, gross)")
+        admin_prompt = _build_system_prompt(Role.ADMIN, "payroll_records(employee_id, gross)")
+        self.assertIn("Payroll access scope: self", employee_prompt)
+        self.assertIn("Payroll access scope: team", manager_prompt)
+        self.assertIn("Payroll access scope: all", admin_prompt)
+
+    def test_sql_prompt_receives_authenticated_employee_id(self):
+        prompt = _build_system_prompt(Role.MANAGER, "employees(id)", employee_id=2)
+        self.assertIn("Authenticated employee database ID: 2", prompt)
+        self.assertIn("do not narrow those requests to the manager's own ID", prompt)
+
     def test_direct_database_access_cannot_bypass_scoped_view(self):
         for sql in (
             "SELECT id, name FROM main.employees",
@@ -162,8 +196,13 @@ class FakeOpenAIClient:
 
 
 class SQLAgentResponseTests(unittest.TestCase):
-    def run_agent(self, generated_sql: str, role: Role, result_rows=None):
+    def run_agent(self, generated_sql: str, role: Role, result_rows=None, retry_sql: str | None = None):
         client = FakeOpenAIClient(generated_sql)
+        if retry_sql is not None:
+            client.chat.completions.create.side_effect = [
+                SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=generated_sql))]),
+                SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=retry_sql))]),
+            ]
         execute_query = patch.object(
             sql_agent,
             "execute_scoped_select",
@@ -234,27 +273,39 @@ class SQLAgentResponseTests(unittest.TestCase):
         employee_execute.assert_not_called()
         manager_execute.assert_not_called()
         self.assertEqual(employee_client.chat.completions.create.await_count, 1)
-        self.assertEqual(manager_client.chat.completions.create.await_count, 1)
+        self.assertEqual(manager_client.chat.completions.create.await_count, 2)
 
-    def test_restricted_fields_and_payroll_receive_explicit_denials(self):
+    def test_manager_direct_report_payroll_false_refusal_retries_into_scoped_query(self):
+        payroll_sql = (
+            "SELECT e.name, p.gross FROM employees e "
+            "JOIN payroll_records p ON p.employee_id = e.id WHERE e.name = 'Jesse Spears'"
+        )
+        result, client, execute_query = self.run_agent(
+            "DENIED:OTHER_EMPLOYEE_INFO",
+            Role.MANAGER,
+            result_rows=[{"name": "Jesse Spears", "gross": 95000}],
+            retry_sql=payroll_sql,
+        )
+        self.assertEqual(result["rows"], [{"name": "Jesse Spears", "gross": 95000}])
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        execute_query.assert_called_once()
+
+    def test_restricted_fields_are_denied_but_allowed_payroll_fields_are_accessible(self):
         restricted_result, _, restricted_execute = self.run_agent(
             "SELECT bank_account_number FROM employees", Role.ADMIN
         )
         payroll_result, _, payroll_execute = self.run_agent(
-            "SELECT gross FROM payroll_records", Role.ADMIN
+            "SELECT gross FROM payroll_records", Role.ADMIN, result_rows=[{"gross": 80000}]
         )
         self.assertEqual(
             restricted_result["answer"],
             "The requested fields cannot be accessed by the SQL assistant for any role.",
         )
-        self.assertEqual(
-            payroll_result["answer"],
-            "The SQL assistant does not have access to payroll data for any role.",
-        )
         self.assertTrue(restricted_result["denied"])
-        self.assertTrue(payroll_result["denied"])
+        self.assertFalse(payroll_result["denied"])
+        self.assertEqual(payroll_result["rows"], [{"gross": 80000}])
         restricted_execute.assert_not_called()
-        payroll_execute.assert_not_called()
+        payroll_execute.assert_called_once()
 
     def test_empty_authorized_query_returns_no_match_not_permission_denial(self):
         result, client, execute_query = self.run_agent(

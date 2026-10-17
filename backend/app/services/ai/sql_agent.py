@@ -34,8 +34,15 @@ class SQLAgentError(Exception):
         self.status_code = status_code
 
 
-def _build_system_prompt(role: Role, schema: str) -> str:
+def _build_system_prompt(role: Role, schema: str, employee_id: int | None = None) -> str:
     permissions = SQL_ACCESS_CONTROL_MATRIX[role]
+    identity_context = (
+        f"Authenticated employee database ID: {employee_id}. Treat 'me', 'my', and 'own' as this identity. "
+        "For managers, 'my team', 'my reports', and 'my employees' refer to direct reports; do not narrow "
+        "those requests to the manager's own ID. The server independently enforces the row scope.\n"
+        if employee_id is not None
+        else ""
+    )
     return (
         "You are an HRMS text-to-SQL assistant. Generate exactly one SQLite SELECT statement and nothing else. "
         "Use only tables and columns in the provided schema. Never request restricted columns or attempt to bypass "
@@ -45,12 +52,15 @@ def _build_system_prompt(role: Role, schema: str) -> str:
         "employee_skills.level. For permission violations, do not generate SQL or an empty sentinel query: "
         "return exactly one of these tokens instead: DENIED:OTHER_EMPLOYEE_INFO, DENIED:PAYROLL_DATA, "
         "DENIED:RESTRICTED_FIELD, or DENIED:OUT_OF_SCOPE. Use OTHER_EMPLOYEE_INFO for another person's "
-        "records outside this role's scope, PAYROLL_DATA for payroll, and RESTRICTED_FIELD for any blocked "
-        "field. Keep queries focused.\n\n"
+        "records outside this role's scope, PAYROLL_DATA only when payroll rows are outside this role's scope, "
+        "and RESTRICTED_FIELD for any blocked field. Payroll is available within the role's payroll scope; do "
+        "not refuse payroll queries as a category. Keep queries focused.\n\n"
         f"User role: {role.value}. {role_scope_description(role)}\n"
+        f"{identity_context}"
         f"Employee skill search scope: {permissions.employee_skill_search_scope}. "
         f"Project assignment scope: {permissions.project_assignment_scope}. "
-        f"Leave data scope: {permissions.leave_data_scope}.\n"
+        f"Leave data scope: {permissions.leave_data_scope}. "
+        f"Payroll access scope: {permissions.payroll_access}.\n"
         f"Database value and SQLite guidance:\n{sql_value_guidance()}\n"
         "Available scoped schema:\n"
         f"{schema}\n"
@@ -144,7 +154,7 @@ async def answer_sql_question(
         )
         raise SQLAgentError("SQL_AGENT_DATABASE_UNAVAILABLE", str(error), 503) from None
 
-    system_prompt = _build_system_prompt(role, schema)
+    system_prompt = _build_system_prompt(role, schema, current_user.id)
 
     try:
         async with AsyncOpenAI(api_key=settings.openai_api_key) as client:
@@ -158,6 +168,35 @@ async def answer_sql_question(
                 ],
             )
             raw_sql = generated.choices[0].message.content or ""
+            if role == Role.MANAGER and _model_denial_code(raw_sql) == "OTHER_EMPLOYEE_INFO":
+                logger.info(
+                    "sql_agent_manager_team_refusal_retry",
+                    user_id=current_user.id,
+                    role=role.value,
+                )
+                retry_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            system_prompt
+                            + "\nThe requested employee may be a direct report. Managers are explicitly allowed "
+                            "to query their own and direct-report payroll rows. Do not refuse only because the "
+                            "request names another employee. Query employees joined to payroll_records by "
+                            "payroll_records.employee_id = employees.id and match the requested name. Both tables "
+                            "are already restricted by the server to this manager's team, so do not add an extra "
+                            "manager_id filter. Return the SELECT query; scoped execution will return zero rows if "
+                            "the named person is outside the permitted team."
+                        ),
+                    },
+                    *history,
+                    {"role": "user", "content": message},
+                ]
+                generated = await client.chat.completions.create(
+                    model=settings.openai_model,
+                    temperature=0,
+                    messages=retry_messages,
+                )
+                raw_sql = generated.choices[0].message.content or ""
     except Exception as error:
         logger.error(
             "sql_agent_generation_failed",
