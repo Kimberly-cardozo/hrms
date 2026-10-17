@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     employee_document_upload_dir: str = "/app/storage/employee-documents"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-small"
     internal_api_base_url: str = "http://127.0.0.1:8000"
+    policy_rag_source_dir: str = ""
+    policy_rag_index_path: str = ""
+    policy_rag_min_similarity: float = 0.28
 
 
 settings = Settings()

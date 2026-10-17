@@ -8,8 +8,13 @@ services:
     environment:
       PYTHONPATH: /app
       DATABASE_URL: sqlite+aiosqlite:///./storage/hrms.db
+      POLICY_RAG_SOURCE_DIR: /app/storage/hr-policies
+      POLICY_RAG_INDEX_PATH: /app/storage/policy-rag-index.json
     volumes:
       - ./backend:/app
+      - ./leave_policy_sample.pdf:/app/storage/hr-policies/leave_policy_sample.pdf:ro
+      - ./policy_sample.pdf:/app/storage/hr-policies/policy_sample.pdf:ro
+      - ./privacy_policy_sample.txt:/app/storage/hr-policies/privacy_policy_sample.txt:ro
     ports:
       - "8000:8000"
 

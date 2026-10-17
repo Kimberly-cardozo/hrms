@@ -363,6 +363,22 @@ export type SQLAssistantResponse = {
   truncated: boolean;
 };
 
+export type PolicyRagSource = {
+  source_id: string;
+  title: string;
+  filename: string;
+  page: number | null;
+  section: string;
+  excerpt: string;
+  relevance: number;
+};
+
+export type PolicyRagResponse = {
+  answer: string;
+  sources: PolicyRagSource[];
+  refused: boolean;
+};
+
 export type HRActionResult = {
   status: "confirmation_required" | "completed" | "handoff" | "denied" | "failed" | "cancelled";
   tool_name: string;
@@ -384,6 +400,26 @@ export async function askSQLAssistant(
   history: Array<{ role: "user" | "assistant"; content: string }>
 ): Promise<ApiResult<ApiEnvelope<SQLAssistantResponse> | { detail?: unknown }>> {
   const response = await fetch(`${API_BASE}/api/v1/chat/sql`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ message, history }),
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
+export async function askPolicyRag(
+  token: string,
+  message: string,
+  history: Array<{ role: "user" | "assistant"; content: string }> = []
+): Promise<ApiResult<ApiEnvelope<PolicyRagResponse> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/policy`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

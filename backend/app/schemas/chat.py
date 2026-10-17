@@ -22,6 +22,11 @@ class SQLChatRequest(BaseModel):
     history: list[SQLChatHistoryMessage] = Field(default_factory=list, max_length=8)
 
 
+class PolicyChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    history: list[SQLChatHistoryMessage] = Field(default_factory=list, max_length=8)
+
+
 class ActionChatRequest(BaseModel):
     message: str | None = Field(default=None, min_length=1, max_length=2000)
     history: list[SQLChatHistoryMessage] = Field(default_factory=list, max_length=8)

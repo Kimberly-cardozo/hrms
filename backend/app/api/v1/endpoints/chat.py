@@ -6,13 +6,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.response import error_response
 from app.db.session import get_db
 from app.models.employee import Employee
-from app.schemas.chat import ActionChatRequest, ChatMessageCreate, ChatSessionCreate, SQLChatRequest
+from app.schemas.chat import ActionChatRequest, ChatMessageCreate, ChatSessionCreate, PolicyChatRequest, SQLChatRequest
 from app.services.ai.action_agent import ActionAgentError, answer_action_question, confirm_hr_action
+from app.services.ai.policy_rag import PolicyRAGError, answer_policy_question
 from app.services.ai.sql_agent import SQLAgentError, answer_sql_question
 from app.services.auth import get_current_user, oauth2_scheme
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
+
+
+@router.post("/policy")
+async def policy_chat(
+    payload: PolicyChatRequest,
+    current_user: Employee = Depends(get_current_user),
+):
+    try:
+        result = await answer_policy_question(payload.message)
+    except PolicyRAGError as error:
+        logger.warning(
+            "policy_rag_request_failed",
+            user_id=current_user.id,
+            role=current_user.role.value,
+            error_code=error.code,
+            error_message=error.message,
+        )
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error_response(error.code, error.message),
+        ) from None
+    return {"success": True, "data": result, "error": None}
 
 
 @router.post("/sql")
