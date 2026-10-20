@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays, Gift, PlaneTakeoff } from "lucide-react";
+import { ArrowRight, BookOpenCheck, Bot, CalendarDays, Gift, Info, ListChecks, PlaneTakeoff, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -10,6 +10,46 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fetchBirthdays, fetchHolidays, fetchProfile, type Birthday, type Holiday } from "@/lib/api";
 import { formatDateDDMMYY } from "@/lib/date";
+import { cn } from "@/lib/utils";
+
+const aiAssistants = [
+  {
+    title: "Policy RAG",
+    tag: "HR Policies",
+    href: "/policy-rag",
+    icon: BookOpenCheck,
+    accentColor: "border-emerald-300/20 bg-emerald-300/10 text-emerald-200",
+    badgeColor: "border-emerald-300/20 bg-emerald-400/10 text-emerald-200",
+    hoverBorder: "hover:border-emerald-500/40",
+    description:
+      "Answers are grounded only in the supplied leave, HR, and privacy policy documents, with source citations.",
+    actionText: "Ask Policy Questions",
+  },
+  {
+    title: "Query Assistant",
+    tag: "HRMS Data",
+    href: "/query-assistant",
+    icon: Sparkles,
+    accentColor: "border-cyan-300/20 bg-cyan-300/10 text-cyan-200",
+    badgeColor: "border-cyan-300/20 bg-cyan-400/10 text-cyan-200",
+    hoverBorder: "hover:border-cyan-500/40",
+    description:
+      "Ask questions about HRMS data, employees, projects, skills, leave, and tickets. Access depends on your role.",
+    actionText: "Query HRMS Data",
+  },
+  {
+    title: "Automate HR Tasks",
+    tag: "Operations",
+    href: "/automate-hr-tasks",
+    icon: ListChecks,
+    accentColor: "border-indigo-300/20 bg-indigo-300/10 text-indigo-200",
+    badgeColor: "border-indigo-300/20 bg-indigo-400/10 text-indigo-200",
+    hoverBorder: "hover:border-indigo-500/40",
+    description:
+      "Request leave, create tickets, and perform role-authorized HR actions. Changes are sent to existing HRMS APIs and require your confirmation.",
+    actionText: "Automate Operations",
+  },
+];
 
 export default function DashboardPage() {
   const [name, setName] = useState("User");
@@ -229,6 +269,69 @@ export default function DashboardPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* AI Assistants Section */}
+          <div className="mt-8">
+            <div className="mb-4">
+              <div className="flex items-center gap-2">
+                <Bot className="h-5 w-5 text-indigo-300" />
+                <h2 className="text-xl font-semibold text-white">AI Assistants</h2>
+              </div>
+              <p className="mt-1 text-sm text-slate-400">
+                Specialized assistants to answer policy questions, query HRMS data, and automate HR actions.
+              </p>
+            </div>
+
+            <div className="grid gap-5 md:grid-cols-3">
+              {aiAssistants.map((assistant) => (
+                <Card
+                  key={assistant.title}
+                  className={cn(
+                    "flex flex-col justify-between border border-slate-800/90 bg-[#0d1428] text-white shadow-lg shadow-black/20 transition hover:-translate-y-0.5 hover:shadow-xl",
+                    assistant.hoverBorder
+                  )}
+                >
+                  <CardContent className="flex flex-1 flex-col justify-between p-5">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <div
+                          className={cn(
+                            "inline-flex h-11 w-11 items-center justify-center rounded-xl border",
+                            assistant.accentColor
+                          )}
+                        >
+                          <assistant.icon className="h-5 w-5" />
+                        </div>
+                        <span className={cn("rounded-full border px-3 py-1 text-xs", assistant.badgeColor)}>
+                          {assistant.tag}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 flex items-center gap-2">
+                        <h3 className="text-lg font-semibold text-white">{assistant.title}</h3>
+                        <Info className="h-4 w-4 text-slate-500" />
+                      </div>
+
+                      <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                        {assistant.description}
+                      </p>
+                    </div>
+
+                    <div className="mt-6">
+                      <Button
+                        className="w-full justify-between transition hover:bg-indigo-600 hover:text-white"
+                        onClick={() => router.push(assistant.href)}
+                      >
+                        <span>{assistant.actionText}</span>
+                        <ArrowRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+
           {error ? <p className="mt-4 text-sm text-rose-300">{error}</p> : null}
         </div>
       </section>

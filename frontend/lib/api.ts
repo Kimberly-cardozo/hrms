@@ -366,6 +366,7 @@ export type SQLAssistantResponse = {
 export type PolicyRagSource = {
   source_id: string;
   title: string;
+  topic?: string;
   filename: string;
   page: number | null;
   section: string;

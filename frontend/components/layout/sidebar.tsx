@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, BookOpenCheck, CalendarClock, CalendarDays, CalendarPlus2, CircleDollarSign, FileText, LayoutDashboard, ListChecks, ScrollText, Sparkles, Ticket, UserCircle2, Users, Vote } from "lucide-react";
+import { Bell, BookOpenCheck, CalendarClock, CalendarDays, CalendarPlus2, CircleDollarSign, FileText, Info, LayoutDashboard, ListChecks, ScrollText, Sparkles, Ticket, UserCircle2, Users, Vote } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -16,9 +16,24 @@ const navItems = [
   { icon: CalendarPlus2, label: "Leaves", href: "/leaves" },
   { icon: Bell, label: "Announcements", href: "/announcements" },
   { icon: ScrollText, label: "HR Policies", href: "/hr-policies" },
-  { icon: BookOpenCheck, label: "Policy RAG", href: "/policy-rag" },
-  { icon: Sparkles, label: "Query Assistant", href: "/query-assistant" },
-  { icon: ListChecks, label: "Automate HR Tasks", href: "/automate-hr-tasks" },
+  {
+    icon: BookOpenCheck,
+    label: "Policy RAG",
+    href: "/policy-rag",
+    description: "Answers are grounded only in the supplied leave, HR, and privacy policy documents, with source citations.",
+  },
+  {
+    icon: Sparkles,
+    label: "Query Assistant",
+    href: "/query-assistant",
+    description: "Ask questions about HRMS data, employees, projects, skills, leave, and tickets. Access depends on your role.",
+  },
+  {
+    icon: ListChecks,
+    label: "Automate HR Tasks",
+    href: "/automate-hr-tasks",
+    description: "Request leave, create tickets, and perform role-authorized HR actions. Changes are sent to existing HRMS APIs and require your confirmation.",
+  },
   { icon: Vote, label: "Polls", href: "/polls" },
   { icon: CalendarDays, label: "Team Calendar", href: "/team-calendar" },
   { icon: Ticket, label: "Tickets", href: "/tickets" },
