@@ -150,6 +150,20 @@ SQL_SCHEMA_RELATIONSHIPS = (
     "payroll_records.employee_id = employees.id",
 )
 
+SQL_SCHEMA_DESCRIPTIONS = (
+    "employees stores employee identity and organization details.",
+    "projects is the shared project catalog; projects.status is the project's workflow status.",
+    "employee_projects links employees to projects; employee_projects.role_on_project is the employee's role on that specific project, not their general job title.",
+    "departments stores department names and locations.",
+    "skills stores the shared skill catalog.",
+    "employee_skills links employees to skills and may include their proficiency level.",
+    "job_history stores an employee's job-title history.",
+    "leave_balances stores leave balances by employee and leave type.",
+    "leave_requests stores submitted leave requests and their status.",
+    "tickets stores HR or IT support tickets and their assignment/status details.",
+    "payroll_records stores payroll amounts; only role-authorized rows and allowed columns are available.",
+)
+
 SQL_ENUM_COLUMN_VALUES = {
     "employees.role": tuple(value.value for value in Role),
     "employees.status": tuple(value.value for value in EmployeeStatus),

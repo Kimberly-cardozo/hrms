@@ -37,11 +37,13 @@ class SQLGuardrailError(ValueError):
         code: str = "QUERY_REJECTED",
         table_name: str | None = None,
         restricted_columns: tuple[str, ...] = (),
+        repair_hint: str | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.table_name = table_name
         self.restricted_columns = restricted_columns
+        self.repair_hint = repair_hint
 
 
 def clean_generated_sql(
@@ -85,7 +87,11 @@ def clean_generated_sql(
     try:
         statements = [statement for statement in parse(sql, read="sqlite") if statement is not None]
     except ParseError as error:
-        raise SQLGuardrailError("The generated SQL could not be parsed safely.") from error
+        raise SQLGuardrailError(
+            "The generated SQL could not be parsed safely.",
+            code="QUERY_SYNTAX",
+            repair_hint="The SQL has a syntax error. Return one valid SQLite SELECT using only the supplied schema.",
+        ) from error
     if len(statements) != 1 or not isinstance(statements[0], exp.Query):
         raise SQLGuardrailError("Only one parsed SELECT query is allowed.")
 
@@ -351,6 +357,25 @@ def execute_scoped_select(database_url: str, employee_id: int, role: Role, sql: 
     except (sqlite3.DatabaseError, sqlite3.OperationalError) as error:
         if "interrupted" in str(error).casefold():
             raise SQLGuardrailError("The query exceeded the execution time limit.") from error
+        normalized_error = str(error).casefold()
+        if "no such column" in normalized_error:
+            raise SQLGuardrailError(
+                "The generated query references a column that is not available in the scoped schema.",
+                code="QUERY_SCHEMA",
+                repair_hint="A referenced column is not present in the supplied scoped schema. Use only its listed columns.",
+            ) from error
+        if "ambiguous column name" in normalized_error:
+            raise SQLGuardrailError(
+                "The generated query contains an ambiguous column reference.",
+                code="QUERY_SCHEMA",
+                repair_hint="Qualify ambiguous columns with their table or alias from the supplied schema.",
+            ) from error
+        if "syntax error" in normalized_error:
+            raise SQLGuardrailError(
+                "The generated query has a SQLite syntax error.",
+                code="QUERY_SYNTAX",
+                repair_hint="The SQL has a syntax error. Return one valid SQLite SELECT using only the supplied schema.",
+            ) from error
         raise SQLGuardrailError("The generated query could not be run safely.") from error
     finally:
         connection.close()

@@ -243,6 +243,14 @@ class SQLGuardrailsTests(unittest.TestCase):
         self.assertIn("Authenticated employee database ID: 2", prompt)
         self.assertIn("do not narrow those requests to the manager's own ID", prompt)
 
+    def test_sql_prompt_includes_semantics_only_for_available_tables(self):
+        prompt = _build_system_prompt(
+            Role.MANAGER,
+            "employee_projects(id, employee_id, project_id, role_on_project)",
+        )
+        self.assertIn("role_on_project is the employee's role on that specific project", prompt)
+        self.assertNotIn("payroll_records stores payroll amounts", prompt)
+
     def test_direct_database_access_cannot_bypass_scoped_view(self):
         for sql in (
             "SELECT id, name FROM main.employees",
@@ -278,16 +286,35 @@ class SQLAgentResponseTests(unittest.TestCase):
         role: Role,
         result_rows=None,
         retry_sql: str | None = None,
+        repair_sql: str | None = None,
         message: str = "Test question",
         named_employee_matches=None,
+        execution_side_effect=None,
     ):
         client = FakeOpenAIClient(generated_sql)
+        generated_responses = []
         if retry_sql is not None:
-            client.chat.completions.create.side_effect = [
+            generated_responses.append(
                 SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=generated_sql))]),
-                SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=retry_sql))]),
-            ]
+            )
+            generated_responses.append(
+                SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=retry_sql))])
+            )
+        if repair_sql is not None:
+            if not generated_responses:
+                generated_responses.append(
+                    SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=generated_sql))])
+                )
+            generated_responses.append(
+                SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=repair_sql))])
+            )
+        if generated_responses:
+            client.chat.completions.create.side_effect = generated_responses
         execute_query = patch.object(
+            sql_agent,
+            "execute_scoped_select",
+            side_effect=execution_side_effect,
+        ) if execution_side_effect is not None else patch.object(
             sql_agent,
             "execute_scoped_select",
             return_value=(result_rows or [], False),
@@ -408,7 +435,8 @@ class SQLAgentResponseTests(unittest.TestCase):
 
     def test_project_roles_question_uses_deterministic_distinct_query(self):
         result, client, execute_query = self.run_agent(
-            "SELECT 1 WHERE 0",
+            "SELECT DISTINCT role_on_project FROM employee_projects "
+            "WHERE role_on_project IS NOT NULL ORDER BY role_on_project",
             Role.MANAGER,
             result_rows=[{"role_on_project": "AI Engineer"}],
             message="What are various project roles?",
@@ -416,11 +444,70 @@ class SQLAgentResponseTests(unittest.TestCase):
         self.assertFalse(result["denied"])
         self.assertEqual(result["rows"], [{"role_on_project": "AI Engineer"}])
         self.assertEqual(client.chat.completions.create.await_count, 1)
-        self.assertEqual(
-            execute_query.call_args.args[3],
+        self.assertEqual(execute_query.call_args.args[3],
             "SELECT DISTINCT role_on_project FROM employee_projects "
-            "WHERE role_on_project IS NOT NULL ORDER BY role_on_project",
+            "WHERE role_on_project IS NOT NULL ORDER BY role_on_project")
+
+    def test_project_role_question_repairs_unknown_column_once(self):
+        repaired_sql = (
+            "SELECT DISTINCT role_on_project FROM employee_projects "
+            "WHERE role_on_project IS NOT NULL ORDER BY role_on_project"
         )
+        repair_hint = "A referenced column is not present in the supplied scoped schema. Use only its listed columns."
+        result, client, execute_query = self.run_agent(
+            "SELECT DISTINCT project_role FROM employee_projects",
+            Role.MANAGER,
+            result_rows=[{"role_on_project": "AI Engineer"}],
+            repair_sql=repaired_sql,
+            message="What are various project roles?",
+            execution_side_effect=[
+                SQLGuardrailError("unknown column", code="QUERY_SCHEMA", repair_hint=repair_hint),
+                ([{"role_on_project": "AI Engineer"}], False),
+            ],
+        )
+        self.assertEqual(result["rows"], [{"role_on_project": "AI Engineer"}])
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        self.assertEqual(execute_query.call_count, 2)
+        repair_messages = client.chat.completions.create.await_args_list[1].kwargs["messages"]
+        self.assertEqual(repair_messages[-1]["content"], repair_hint)
+
+    def test_failed_sql_repair_is_not_retried_again(self):
+        generated_sql = "SELECT DISTINCT project_role FROM employee_projects"
+        repaired_sql = "SELECT DISTINCT missing_role FROM employee_projects"
+        repair_hint = "A referenced column is not present in the supplied scoped schema. Use only its listed columns."
+        client = FakeOpenAIClient(generated_sql)
+        client.chat.completions.create.side_effect = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=generated_sql))]),
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=repaired_sql))]),
+        ]
+        execute_query = AsyncMock()
+        with (
+            patch.object(settings, "openai_api_key", "test-key"),
+            patch.object(sql_agent, "AsyncOpenAI", return_value=client),
+            patch.object(sql_agent, "get_scoped_schema", return_value="employee_projects(role_on_project)"),
+            patch.object(sql_agent, "get_scoped_employee_matches", return_value=[]),
+            patch.object(
+                sql_agent,
+                "execute_scoped_select",
+                side_effect=[
+                    SQLGuardrailError("unknown column", code="QUERY_SCHEMA", repair_hint=repair_hint),
+                    SQLGuardrailError("unknown column", code="QUERY_SCHEMA", repair_hint=repair_hint),
+                ],
+            ) as execute_query,
+        ):
+            with self.assertRaises(sql_agent.SQLAgentError) as error:
+                asyncio.run(
+                    sql_agent.answer_sql_question(
+                        "What are various project roles?",
+                        [],
+                        SimpleNamespace(id=17, role=Role.MANAGER),
+                        "sqlite:///unused.db",
+                    )
+                )
+
+        self.assertEqual(error.exception.code, "SQL_AGENT_QUERY_REJECTED")
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        self.assertEqual(execute_query.call_count, 2)
 
     def test_manager_user_id_phrasings_use_scoped_name_lookup(self):
         for message in (

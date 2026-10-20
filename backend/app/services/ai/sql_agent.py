@@ -9,6 +9,7 @@ from app.models.enums import Role
 from app.services.ai.permissions import (
     SQL_ACCESS_CONTROL_MATRIX,
     SQL_DENIAL_CODES,
+    SQL_SCHEMA_DESCRIPTIONS,
     SQL_SCHEMA_RELATIONSHIPS,
     empty_result_message,
     guardrail_denial_message,
@@ -28,11 +29,6 @@ logger = structlog.get_logger(__name__)
 _REPORT_SCOPE_PATTERN = re.compile(
     r"\b(?:direct\s+reports?|my\s+reports?|reports?\s+(?:under|of)|team\s+members?|subordinates?|"
     r"employees?\s+reporting\s+to|people\s+reporting\s+to)\b",
-    re.IGNORECASE,
-)
-_PROJECT_ROLE_LIST_PATTERN = re.compile(
-    r"\b(?:what|which|list|show)\b.{0,60}\b(?:project\s+roles?|roles?\s+on\s+projects?)\b|"
-    r"\b(?:various|different|all)\s+project\s+roles?\b",
     re.IGNORECASE,
 )
 _EXPLICIT_EMPLOYEE_ID_PATTERN = re.compile(r"\b(?:employee\s+)?id\s*[:#]?\s*\d+\b", re.IGNORECASE)
@@ -114,6 +110,15 @@ def _build_system_prompt(
         f"Database value and SQLite guidance:\n{sql_value_guidance()}\n"
         "Available scoped schema:\n"
         f"{schema}\n"
+        "Schema semantics:\n"
+        + "\n".join(
+            description
+            for description in SQL_SCHEMA_DESCRIPTIONS
+            if description.split(" ", 1)[0].rstrip(".") in {
+                table.split("(", 1)[0].casefold() for table in schema.splitlines()
+            }
+        )
+        + "\n"
         "Verified table relationships:\n"
         + "\n".join(f"- {relationship}" for relationship in SQL_SCHEMA_RELATIONSHIPS)
     )
@@ -169,6 +174,24 @@ def _matched_result(role: Role, sql: str, rows: list[dict], truncated: bool) -> 
         "truncated": truncated,
         "denied": False,
     }
+
+
+def _handle_query_rejection(role: Role, error: SQLGuardrailError) -> dict:
+    logger.warning(
+        "sql_agent_query_rejected",
+        role=role.value,
+        error_message=_safe_error_message(error),
+    )
+    if error.code == "RESTRICTED_FIELD":
+        return _denied_result(role, "RESTRICTED_FIELD")
+    if error.code == "DISALLOWED_TABLE":
+        denial_code = "PAYROLL_DATA" if error.table_name == "payroll_records" else "OUT_OF_SCOPE"
+        return _denied_result(role, denial_code)
+    raise SQLAgentError(
+        "SQL_AGENT_QUERY_REJECTED",
+        "I could not generate a safe read-only query for that question. Try rephrasing it.",
+        400,
+    ) from None
 
 
 async def answer_sql_question(
@@ -290,12 +313,6 @@ async def answer_sql_question(
             f"'{escaped_name}'"
         )
     else:
-        if _PROJECT_ROLE_LIST_PATTERN.search(message) and not named_employee_subject_name:
-            raw_sql = (
-                "SELECT DISTINCT role_on_project FROM employee_projects "
-                "WHERE role_on_project IS NOT NULL ORDER BY role_on_project"
-            )
-
         model_denial = _model_denial_code(raw_sql)
         if model_denial is not None:
             return _denied_result(role, model_denial)
@@ -314,31 +331,77 @@ async def answer_sql_question(
             sql=safe_sql,
         )
         rows, truncated = execute_scoped_select(database_url, current_user.id, role, safe_sql)
-        logger.info(
-            "sql_agent_query_results",
-            user_id=current_user.id,
-            role=role.value,
-            row_count=len(rows),
-            truncated=truncated,
-            rows=rows,
-        )
     except SQLGuardrailError as error:
-        logger.warning(
-            "sql_agent_query_rejected",
+        if error.repair_hint is None:
+            return _handle_query_rejection(role, error)
+
+        logger.info(
+            "sql_agent_query_repair_attempt",
             user_id=current_user.id,
             role=role.value,
-            error_message=_safe_error_message(error),
+            error_code=error.code,
         )
-        if error.code == "RESTRICTED_FIELD":
-            return _denied_result(role, "RESTRICTED_FIELD")
-        if error.code == "DISALLOWED_TABLE":
-            denial_code = "PAYROLL_DATA" if error.table_name == "payroll_records" else "OUT_OF_SCOPE"
-            return _denied_result(role, denial_code)
-        raise SQLAgentError(
-            "SQL_AGENT_QUERY_REJECTED",
-            "I could not generate a safe read-only query for that question. Try rephrasing it.",
-            400,
-        ) from None
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    system_prompt
+                    + "\nThe previous query had a correctable syntax or schema error. Repair it once while preserving "
+                    "the user's request and permissions. Return exactly one SELECT and use only the scoped schema."
+                ),
+            },
+            *history,
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": raw_sql},
+            {"role": "user", "content": error.repair_hint},
+        ]
+        try:
+            async with AsyncOpenAI(api_key=settings.openai_api_key) as client:
+                repaired = await client.chat.completions.create(
+                    model=settings.openai_model,
+                    temperature=0,
+                    messages=repair_messages,
+                )
+            raw_sql = repaired.choices[0].message.content or ""
+        except Exception as repair_error:
+            logger.warning(
+                "sql_agent_query_repair_failed",
+                user_id=current_user.id,
+                role=role.value,
+                error_type=type(repair_error).__name__,
+            )
+            return _handle_query_rejection(role, error)
+
+        repair_denial = _model_denial_code(raw_sql)
+        if repair_denial is not None:
+            return _denied_result(role, repair_denial)
+
+        try:
+            safe_sql = clean_generated_sql(
+                raw_sql,
+                role,
+                named_employee_matches,
+                named_employee_subject_name,
+            )
+            rows, truncated = execute_scoped_select(database_url, current_user.id, role, safe_sql)
+        except SQLGuardrailError as repair_error:
+            return _handle_query_rejection(role, repair_error)
+
+        logger.info(
+            "sql_agent_query_generated",
+            user_id=current_user.id,
+            role=role.value,
+            sql=safe_sql,
+            repaired=True,
+        )
+    logger.info(
+        "sql_agent_query_results",
+        user_id=current_user.id,
+        role=role.value,
+        row_count=len(rows),
+        truncated=truncated,
+        rows=rows,
+    )
 
     if not rows:
         return _empty_result(role, safe_sql)
