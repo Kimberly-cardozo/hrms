@@ -61,6 +61,7 @@ export function Sidebar() {
           <Link
             key={item.label}
             href={item.href}
+            title={item.description || item.label}
             className={cn(
               "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white",
               item.href !== "#" && pathname.startsWith(item.href) && "bg-gradient-to-r from-indigo-500/20 to-transparent text-white ring-1 ring-indigo-400/20"

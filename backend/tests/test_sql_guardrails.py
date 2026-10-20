@@ -26,6 +26,7 @@ from app.services.ai.sql_guardrails import (
     SQLGuardrailError,
     clean_generated_sql,
     execute_scoped_select,
+    get_scoped_employee_matches,
     get_scoped_schema,
 )
 
@@ -50,7 +51,7 @@ class SQLGuardrailsTests(unittest.TestCase):
                 CREATE TABLE leave_requests (id INTEGER PRIMARY KEY, employee_id INTEGER, status TEXT);
                 CREATE TABLE tickets (id INTEGER PRIMARY KEY, employee_id INTEGER, assignee_id INTEGER, title TEXT);
                 CREATE TABLE payroll_records (id INTEGER PRIMARY KEY, employee_id INTEGER, gross REAL, net REAL, pan TEXT, pf_uan TEXT, esi_no TEXT);
-                INSERT INTO employees VALUES (1, NULL, 'Manager', 'secret', 100000), (2, 1, 'Report', 'secret', 80000), (3, NULL, 'Other', 'secret', 90000);
+                INSERT INTO employees VALUES (1, NULL, 'Manager', 'secret', 100000), (2, 1, 'Report', 'secret', 80000), (3, NULL, 'Other', 'secret', 90000), (4, NULL, 'Employee User', 'secret', 70000), (5, NULL, 'Manager User', 'secret', 65000);
                 INSERT INTO projects VALUES (1, 'Alpha');
                 INSERT INTO employee_projects VALUES (1, 2, 1), (2, 3, 1);
                 INSERT INTO departments VALUES (1, 'Engineering');
@@ -58,7 +59,7 @@ class SQLGuardrailsTests(unittest.TestCase):
                 INSERT INTO employee_skills VALUES (1, 2, 1), (2, 3, 1);
                 INSERT INTO job_history VALUES (1, 2, 'Engineer'), (2, 3, 'Analyst');
                 INSERT INTO leave_balances VALUES (1, 2, 4), (2, 3, 9);
-                INSERT INTO leave_requests VALUES (1, 2, 'PENDING'), (2, 3, 'APPROVED');
+                INSERT INTO leave_requests VALUES (1, 2, 'PENDING'), (2, 3, 'APPROVED'), (3, 4, 'PENDING'), (4, 5, 'PENDING');
                 INSERT INTO tickets VALUES (1, 2, 1, 'Report ticket'), (2, 3, NULL, 'Other ticket');
                 INSERT INTO payroll_records VALUES (1, 2, 80000, 70000, 'PAN2', 'UAN2', 'ESI2'), (2, 3, 90000, 80000, 'PAN3', 'UAN3', 'ESI3'), (3, 1, 100000, 90000, 'PAN1', 'UAN1', 'ESI1');
                 """
@@ -86,6 +87,68 @@ class SQLGuardrailsTests(unittest.TestCase):
             self.database_url, 1, Role.MANAGER, "SELECT id, name FROM employees ORDER BY id"
         )
         self.assertEqual([row["id"] for row in rows], [1, 2])
+
+    def test_employee_name_lookup_matches_case_insensitively(self):
+        rows, _ = execute_scoped_select(
+            self.database_url,
+            1,
+            Role.ADMIN,
+            "SELECT id, name FROM employees WHERE name = 'report'",
+        )
+        self.assertEqual(rows, [{"id": 2, "name": "Report"}])
+
+    def test_partial_name_and_guessed_employee_id_resolve_to_full_scoped_name(self):
+        message = "How many leave requests does employee user have?"
+        matches = get_scoped_employee_matches(self.database_url, 1, Role.ADMIN, message)
+        self.assertEqual(matches, [(4, "Employee User")])
+        self.assertEqual(
+            get_scoped_employee_matches(self.database_url, 1, Role.MANAGER, "Report"),
+            [(2, "Report")],
+        )
+        self.assertEqual(
+            get_scoped_employee_matches(self.database_url, 1, Role.MANAGER, "Employee User"),
+            [],
+        )
+
+        partial_name_sql = clean_generated_sql(
+            "SELECT id FROM employees WHERE name = 'User'",
+            Role.ADMIN,
+            matches,
+        )
+        name_rows, _ = execute_scoped_select(self.database_url, 1, Role.ADMIN, partial_name_sql)
+        self.assertEqual(name_rows, [{"id": 4}])
+
+        guessed_id_sql = clean_generated_sql(
+            "SELECT COUNT(id) AS leave_request_count FROM leave_requests WHERE employee_id = 1",
+            Role.ADMIN,
+            matches,
+        )
+        count_rows, _ = execute_scoped_select(self.database_url, 1, Role.ADMIN, guessed_id_sql)
+        self.assertEqual(count_rows, [{"leave_request_count": 1}])
+
+    def test_pluralized_named_subject_replaces_inferred_manager_id_filter(self):
+        message = "Tell me manager users pending leave requests"
+        matches = get_scoped_employee_matches(self.database_url, 1, Role.ADMIN, message)
+        self.assertEqual(matches, [(5, "Manager User")])
+        subject_name = sql_agent._named_employee_subject_name(message, matches)
+        self.assertEqual(subject_name, "Manager User")
+
+        raw_sql = (
+            "SELECT leave_requests.id, leave_requests.employee_id "
+            "FROM leave_requests JOIN employees "
+            "ON leave_requests.employee_id = employees.id "
+            "WHERE leave_requests.status = 'PENDING' AND employees.manager_id = 1"
+        )
+        safe_sql = clean_generated_sql(raw_sql, Role.ADMIN, matches, subject_name)
+        self.assertIn("employees.name COLLATE NOCASE = 'Manager User'", safe_sql)
+        self.assertNotIn("employees.manager_id = 1", safe_sql)
+        rows, _ = execute_scoped_select(self.database_url, 1, Role.ADMIN, safe_sql)
+        self.assertEqual(rows, [{"id": 4, "employee_id": 5}])
+
+    def test_named_reports_request_does_not_use_named_employee_as_subject(self):
+        message = "Show pending leave requests for Manager User's direct reports"
+        matches = [(5, "Manager User")]
+        self.assertIsNone(sql_agent._named_employee_subject_name(message, matches))
 
     def test_scoped_schema_hides_sensitive_columns(self):
         schema = get_scoped_schema(self.database_url, 1, Role.ADMIN)
@@ -161,6 +224,9 @@ class SQLGuardrailsTests(unittest.TestCase):
         self.assertIn("Payroll access scope: self", employee_prompt)
         self.assertIn("Payroll access scope: team", manager_prompt)
         self.assertIn("Payroll access scope: all", admin_prompt)
+        self.assertIn("case-insensitive employee name lookups", manager_prompt)
+        self.assertIn("Never guess or hard-code an employee ID from a person's name", manager_prompt)
+        self.assertIn("filter on employees.name case-insensitively", manager_prompt)
 
     def test_sql_prompt_receives_authenticated_employee_id(self):
         prompt = _build_system_prompt(Role.MANAGER, "employees(id)", employee_id=2)
@@ -196,7 +262,15 @@ class FakeOpenAIClient:
 
 
 class SQLAgentResponseTests(unittest.TestCase):
-    def run_agent(self, generated_sql: str, role: Role, result_rows=None, retry_sql: str | None = None):
+    def run_agent(
+        self,
+        generated_sql: str,
+        role: Role,
+        result_rows=None,
+        retry_sql: str | None = None,
+        message: str = "Test question",
+        named_employee_matches=None,
+    ):
         client = FakeOpenAIClient(generated_sql)
         if retry_sql is not None:
             client.chat.completions.create.side_effect = [
@@ -212,11 +286,16 @@ class SQLAgentResponseTests(unittest.TestCase):
             patch.object(settings, "openai_api_key", "test-key"),
             patch.object(sql_agent, "AsyncOpenAI", return_value=client),
             patch.object(sql_agent, "get_scoped_schema", return_value="employees(id, name)"),
+            patch.object(
+                sql_agent,
+                "get_scoped_employee_matches",
+                return_value=named_employee_matches or [],
+            ),
             execute_query as mocked_execute,
         ):
             result = asyncio.run(
                 sql_agent.answer_sql_question(
-                    "Test question",
+                    message,
                     [],
                     SimpleNamespace(id=17, role=role),
                     "sqlite:///unused.db",
@@ -241,6 +320,7 @@ class SQLAgentResponseTests(unittest.TestCase):
             patch.object(settings, "openai_api_key", "test-key"),
             patch.object(sql_agent, "AsyncOpenAI", return_value=client),
             patch.object(sql_agent, "get_scoped_schema", return_value="employees(id)"),
+            patch.object(sql_agent, "get_scoped_employee_matches", return_value=[]),
             patch.object(sql_agent, "execute_scoped_select", return_value=(result_rows, True)),
         ):
             result = asyncio.run(
@@ -282,6 +362,66 @@ class SQLAgentResponseTests(unittest.TestCase):
         )
         result, client, execute_query = self.run_agent(
             "DENIED:OTHER_EMPLOYEE_INFO",
+            Role.MANAGER,
+            result_rows=[{"name": "Jesse Spears", "gross": 95000}],
+            retry_sql=payroll_sql,
+        )
+        self.assertEqual(result["rows"], [{"name": "Jesse Spears", "gross": 95000}])
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        execute_query.assert_called_once()
+
+    def test_admin_other_employee_false_refusal_retries_into_scoped_query(self):
+        result, client, execute_query = self.run_agent(
+            "DENIED:OTHER_EMPLOYEE_INFO",
+            Role.ADMIN,
+            result_rows=[{"id": 42}],
+            retry_sql="SELECT id FROM employees WHERE name = 'Jesse Spears'",
+        )
+        self.assertEqual(result["rows"], [{"id": 42}])
+        self.assertFalse(result["denied"])
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        execute_query.assert_called_once()
+
+    def test_admin_employee_id_question_uses_name_lookup_after_model_refuses_twice(self):
+        result, client, execute_query = self.run_agent(
+            "DENIED:OTHER_EMPLOYEE_INFO",
+            Role.ADMIN,
+            result_rows=[{"id": 3, "name": "Employee User"}],
+            message="What is employee user id?",
+            named_employee_matches=[(3, "Employee User")],
+        )
+        self.assertFalse(result["denied"])
+        self.assertEqual(result["rows"], [{"id": 3, "name": "Employee User"}])
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        executed_sql = execute_query.call_args.args[3]
+        self.assertIn("name COLLATE NOCASE = 'Employee User'", executed_sql)
+
+    def test_manager_user_id_phrasings_use_scoped_name_lookup(self):
+        for message in (
+            "What is manager user id?",
+            "What is manager users id?",
+        ):
+            with self.subTest(message=message):
+                result, client, execute_query = self.run_agent(
+                    "this is not safe SQL",
+                    Role.MANAGER,
+                    result_rows=[{"id": 5, "name": "Manager User"}],
+                    message=message,
+                    named_employee_matches=[(5, "Manager User")],
+                )
+                self.assertFalse(result["denied"])
+                self.assertEqual(result["rows"], [{"id": 5, "name": "Manager User"}])
+                self.assertEqual(client.chat.completions.create.await_count, 1)
+                executed_sql = execute_query.call_args.args[3]
+                self.assertIn("name COLLATE NOCASE = 'Manager User'", executed_sql)
+
+    def test_manager_payroll_denial_retries_into_scoped_query(self):
+        payroll_sql = (
+            "SELECT e.name, p.gross FROM employees e "
+            "JOIN payroll_records p ON p.employee_id = e.id WHERE e.name = 'Jesse Spears'"
+        )
+        result, client, execute_query = self.run_agent(
+            "DENIED:PAYROLL_DATA",
             Role.MANAGER,
             result_rows=[{"name": "Jesse Spears", "gross": 95000}],
             retry_sql=payroll_sql,

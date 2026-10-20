@@ -44,7 +44,12 @@ class SQLGuardrailError(ValueError):
         self.restricted_columns = restricted_columns
 
 
-def clean_generated_sql(raw_sql: str, role: Role = Role.ADMIN) -> str:
+def clean_generated_sql(
+    raw_sql: str,
+    role: Role = Role.ADMIN,
+    named_employee_matches: list[tuple[int, str]] | None = None,
+    named_employee_subject_name: str | None = None,
+) -> str:
     sql = raw_sql.strip()
     fenced = re.fullmatch(r"```(?:sql)?\s*(.*?)\s*```", sql, flags=re.IGNORECASE | re.DOTALL)
     if fenced:
@@ -104,7 +109,98 @@ def clean_generated_sql(raw_sql: str, role: Role = Role.ADMIN) -> str:
                 code="RESTRICTED_FIELD",
                 restricted_columns=(column.name.casefold(),),
             )
-    return sql
+
+    employee_aliases = {
+        table.alias_or_name.casefold()
+        for table in statement.find_all(exp.Table)
+        if table.name.casefold() == "employees"
+    }
+    employee_ids = {employee_id for employee_id, _ in named_employee_matches or []}
+    rewritten_name_comparison = False
+    named_subject_filter_found = False
+    for comparison in statement.find_all(exp.EQ):
+        for operand_name in ("this", "expression"):
+            operand = comparison.args.get(operand_name)
+            value_name = "expression" if operand_name == "this" else "this"
+            value = comparison.args.get(value_name)
+            if not isinstance(operand, exp.Column):
+                continue
+            is_employee_column = (
+                operand.table.casefold() in employee_aliases
+                if operand.table
+                else bool(employee_aliases)
+            )
+            if (
+                named_employee_subject_name
+                and is_employee_column
+                and operand.name.casefold() in {"id", "manager_id"}
+                and isinstance(value, exp.Literal)
+            ):
+                employee_table = next(
+                    table for table in statement.find_all(exp.Table)
+                    if table.name.casefold() == "employees"
+                    and (not operand.table or table.alias_or_name.casefold() == operand.table.casefold())
+                )
+                employee_name_column = exp.Collate(
+                    this=exp.column("name", table=employee_table.alias_or_name),
+                    expression=exp.Var(this="NOCASE"),
+                )
+                comparison.set(operand_name, employee_name_column)
+                comparison.set(value_name, exp.Literal.string(named_employee_subject_name))
+                named_subject_filter_found = True
+                rewritten_name_comparison = True
+                continue
+            if operand.name.casefold() == "name" and is_employee_column:
+                if named_employee_subject_name:
+                    comparison.set(value_name, exp.Literal.string(named_employee_subject_name))
+                    named_subject_filter_found = True
+                if isinstance(value, exp.Literal) and value.is_string and named_employee_matches:
+                    partial_name = value.this.casefold()
+                    full_names = {
+                        name
+                        for _, name in named_employee_matches
+                        if partial_name in {word.casefold() for word in re.findall(r"\w+", name)}
+                    }
+                    if len(full_names) == 1:
+                        comparison.set(value_name, exp.Literal.string(next(iter(full_names))))
+                comparison.set(
+                    operand_name,
+                    exp.Collate(this=operand.copy(), expression=exp.Var(this="NOCASE")),
+                )
+                rewritten_name_comparison = True
+            elif (
+                len(employee_ids) == 1
+                and isinstance(value, exp.Literal)
+                and not value.is_string
+                and value.this.isdigit()
+                and (
+                    operand.name.casefold() == "employee_id"
+                    or (operand.name.casefold() == "id" and is_employee_column)
+                )
+            ):
+                comparison.set(value_name, exp.Literal.number(str(next(iter(employee_ids)))))
+                rewritten_name_comparison = True
+
+    if named_employee_subject_name and employee_aliases and not named_subject_filter_found:
+        employee_table = next(
+            table for table in statement.find_all(exp.Table)
+            if table.name.casefold() == "employees"
+        )
+        name_filter = exp.EQ(
+            this=exp.Collate(
+                this=exp.column("name", table=employee_table.alias_or_name),
+                expression=exp.Var(this="NOCASE"),
+            ),
+            expression=exp.Literal.string(named_employee_subject_name),
+        )
+        where = statement.args.get("where")
+        if where:
+            where.set("this", exp.and_(where.this, name_filter))
+        else:
+            statement.set("where", exp.Where(this=name_filter))
+        rewritten_name_comparison = True
+
+    return statement.sql(dialect="sqlite") if rewritten_name_comparison else sql
 
 
 def _sqlite_file_uri(database_url: str) -> str:
@@ -119,6 +215,60 @@ def _sqlite_file_uri(database_url: str) -> str:
 
 def _row_scope(table: str, role: Role, employee_id: int) -> str | None:
     return row_scope_clause(table, role, employee_id)
+
+
+def get_scoped_employee_matches(
+    database_url: str,
+    employee_id: int,
+    role: Role,
+    message: str,
+) -> list[tuple[int, str]]:
+    connection: sqlite3.Connection | None = None
+    try:
+        database_uri = _sqlite_file_uri(database_url)
+        connection = sqlite3.connect(database_uri, uri=True, timeout=3)
+        scope = _row_scope("employees", role, employee_id)
+        where_clause = f" WHERE {scope}" if scope else ""
+        rows = connection.execute(
+            f'SELECT "id", "name" FROM main."employees"{where_clause}'
+        ).fetchall()
+        matches = []
+        message_words = re.findall(r"\w+", message.casefold())
+        for row_id, name in rows:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            name_words = re.findall(r"\w+", name.casefold())
+            for start in range(len(message_words) - len(name_words) + 1):
+                candidate_words = message_words[start : start + len(name_words)]
+                if all(
+                    actual == expected or actual == f"{expected}s"
+                    for actual, expected in zip(candidate_words, name_words)
+                ):
+                    matches.append((int(row_id), name.strip()))
+                    break
+        matched_words = {
+            employee_id: re.findall(r"\w+", name.casefold())
+            for employee_id, name in matches
+        }
+        return [
+            match
+            for match in matches
+            if not any(
+                len(other_words) > len(matched_words[match[0]])
+                and any(
+                    other_words[index : index + len(matched_words[match[0]])]
+                    == matched_words[match[0]]
+                    for index in range(len(other_words) - len(matched_words[match[0]]) + 1)
+                )
+                for other_id, other_words in matched_words.items()
+                if other_id != match[0]
+            )
+        ]
+    except sqlite3.Error as error:
+        raise SQLGuardrailError("The HRMS database is unavailable to the SQL assistant.") from error
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _open_scoped_connection(database_url: str, employee_id: int, role: Role) -> sqlite3.Connection:

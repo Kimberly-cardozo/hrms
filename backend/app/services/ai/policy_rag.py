@@ -21,7 +21,6 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 60
 REFUSAL_ANSWER = (
     "I can't answer that because it is beyond the scope of the three provided policy documents. "
-    "I can help with questions about those policies."
 )
 ENGLISH_ONLY_ANSWER = "I can only speak English."
 POLICY_DOCUMENTS = {

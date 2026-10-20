@@ -262,7 +262,7 @@ def permission_denial_message(code: str, role: Role) -> str:
             return "You do not have permission to view another employee's information. You can ask about your own records."
         if role == Role.MANAGER:
             return "You do not have permission to view information outside your team. Manager access is limited to your own and direct-report records."
-        return "Admins may view other employee records, but restricted fields and payroll data remain unavailable."
+        return "Admins may view other employee records and allowed payroll fields; restricted fields remain unavailable."
     if role == Role.EMPLOYEE:
         return "You do not have permission to search other employees' records. You can query your own records and shared catalogs."
     if role == Role.MANAGER:

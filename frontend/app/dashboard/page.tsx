@@ -152,7 +152,71 @@ export default function DashboardPage() {
       <Sidebar />
       <section className="flex w-full min-w-0 flex-col bg-[#060a16]">
         <Topbar name={name} title="Dashboard" />
-        <div className="p-4 md:p-6">
+        <div className="space-y-8 p-4 md:p-6">
+          {/* AI Assistants Section */}
+          <div>
+            <div className="mb-4">
+              <div className="flex items-center gap-2">
+                <Bot className="h-5 w-5 text-indigo-300" />
+                <h2 className="text-xl font-semibold text-white">AI Assistants</h2>
+              </div>
+              <p className="mt-1 text-sm text-slate-400">
+                Choose an AI assistant to query company policies, explore HRMS data, or automate HR operations.
+              </p>
+            </div>
+
+            <div className="grid gap-5 md:grid-cols-3">
+              {aiAssistants.map((assistant) => (
+                <Card
+                  key={assistant.title}
+                  className={cn(
+                    "flex flex-col justify-between border border-slate-800/90 bg-[#0d1428] text-white shadow-lg shadow-black/20 transition hover:-translate-y-0.5 hover:shadow-xl",
+                    assistant.hoverBorder
+                  )}
+                >
+                  <CardContent className="flex flex-1 flex-col justify-between p-5">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <div
+                          className={cn(
+                            "inline-flex h-11 w-11 items-center justify-center rounded-xl border",
+                            assistant.accentColor
+                          )}
+                        >
+                          <assistant.icon className="h-5 w-5" />
+                        </div>
+                        <span className={cn("rounded-full border px-3 py-1 text-xs", assistant.badgeColor)}>
+                          {assistant.tag}
+                        </span>
+                      </div>
+
+                      <div className="mt-4">
+                        <h3 className="text-lg font-semibold text-white">{assistant.title}</h3>
+                      </div>
+
+                      <div className="mt-3 rounded-xl border border-slate-700/60 bg-slate-950/80 p-3 text-xs leading-relaxed text-slate-200">
+                        <div className="flex items-start gap-2.5">
+                          <Info className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
+                          <span>{assistant.description}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-6">
+                      <Button
+                        className="w-full justify-between transition hover:bg-indigo-600 hover:text-white"
+                        onClick={() => router.push(assistant.href)}
+                      >
+                        <span>{assistant.actionText}</span>
+                        <ArrowRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+
           <div className="grid items-start gap-5 xl:grid-cols-[1.05fr_1fr_1fr]">
             <Card className="border border-slate-800/90 bg-gradient-to-br from-[#171a3f] via-[#342f72] to-[#6f5bd3] text-white shadow-[0_30px_80px_-45px_rgba(99,102,241,0.7)]">
               <CardContent className="p-5">
@@ -268,68 +332,6 @@ export default function DashboardPage() {
                 </div>
               </CardContent>
             </Card>
-          </div>
-
-          {/* AI Assistants Section */}
-          <div className="mt-8">
-            <div className="mb-4">
-              <div className="flex items-center gap-2">
-                <Bot className="h-5 w-5 text-indigo-300" />
-                <h2 className="text-xl font-semibold text-white">AI Assistants</h2>
-              </div>
-              <p className="mt-1 text-sm text-slate-400">
-                Specialized assistants to answer policy questions, query HRMS data, and automate HR actions.
-              </p>
-            </div>
-
-            <div className="grid gap-5 md:grid-cols-3">
-              {aiAssistants.map((assistant) => (
-                <Card
-                  key={assistant.title}
-                  className={cn(
-                    "flex flex-col justify-between border border-slate-800/90 bg-[#0d1428] text-white shadow-lg shadow-black/20 transition hover:-translate-y-0.5 hover:shadow-xl",
-                    assistant.hoverBorder
-                  )}
-                >
-                  <CardContent className="flex flex-1 flex-col justify-between p-5">
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <div
-                          className={cn(
-                            "inline-flex h-11 w-11 items-center justify-center rounded-xl border",
-                            assistant.accentColor
-                          )}
-                        >
-                          <assistant.icon className="h-5 w-5" />
-                        </div>
-                        <span className={cn("rounded-full border px-3 py-1 text-xs", assistant.badgeColor)}>
-                          {assistant.tag}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 flex items-center gap-2">
-                        <h3 className="text-lg font-semibold text-white">{assistant.title}</h3>
-                        <Info className="h-4 w-4 text-slate-500" />
-                      </div>
-
-                      <p className="mt-2 text-sm leading-relaxed text-slate-300">
-                        {assistant.description}
-                      </p>
-                    </div>
-
-                    <div className="mt-6">
-                      <Button
-                        className="w-full justify-between transition hover:bg-indigo-600 hover:text-white"
-                        onClick={() => router.push(assistant.href)}
-                      >
-                        <span>{assistant.actionText}</span>
-                        <ArrowRight className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
           </div>
 
           {error ? <p className="mt-4 text-sm text-rose-300">{error}</p> : null}

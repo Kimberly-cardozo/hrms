@@ -20,10 +20,22 @@ from app.services.ai.sql_guardrails import (
     SQLGuardrailError,
     clean_generated_sql,
     execute_scoped_select,
+    get_scoped_employee_matches,
     get_scoped_schema,
 )
 
 logger = structlog.get_logger(__name__)
+_REPORT_SCOPE_PATTERN = re.compile(
+    r"\b(?:direct\s+reports?|my\s+reports?|reports?\s+(?:under|of)|team\s+members?|subordinates?|"
+    r"employees?\s+reporting\s+to|people\s+reporting\s+to)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_EMPLOYEE_ID_PATTERN = re.compile(r"\b(?:employee\s+)?id\s*[:#]?\s*\d+\b", re.IGNORECASE)
+_EMPLOYEE_ID_QUESTION_PATTERN = re.compile(
+    r"\b(?:employees?|users?|persons?|staff(?:\s+members?)?)\s+(?:id|identifier)\b|"
+    r"\b(?:id|identifier)\s+(?:of|for)\b|\bwhat(?:'s|\s+is)\b.*\b(?:id|identifier)\b",
+    re.IGNORECASE,
+)
 
 
 class SQLAgentError(Exception):
@@ -34,7 +46,25 @@ class SQLAgentError(Exception):
         self.status_code = status_code
 
 
-def _build_system_prompt(role: Role, schema: str, employee_id: int | None = None) -> str:
+def _named_employee_subject_name(
+    message: str,
+    named_employee_matches: list[tuple[int, str]],
+) -> str | None:
+    if (
+        len(named_employee_matches) != 1
+        or _REPORT_SCOPE_PATTERN.search(message)
+        or _EXPLICIT_EMPLOYEE_ID_PATTERN.search(message)
+    ):
+        return None
+    return named_employee_matches[0][1]
+
+
+def _build_system_prompt(
+    role: Role,
+    schema: str,
+    employee_id: int | None = None,
+    named_employee_names: tuple[str, ...] = (),
+) -> str:
     permissions = SQL_ACCESS_CONTROL_MATRIX[role]
     identity_context = (
         f"Authenticated employee database ID: {employee_id}. Treat 'me', 'my', and 'own' as this identity. "
@@ -43,11 +73,22 @@ def _build_system_prompt(role: Role, schema: str, employee_id: int | None = None
         if employee_id is not None
         else ""
     )
+    named_employee_context = (
+        "Full employee name(s) from the user's authorized records that appear in this request: "
+        + ", ".join(named_employee_names)
+        + ". Preserve and match the complete name, not just one name component.\n"
+        if named_employee_names
+        else ""
+    )
     return (
         "You are an HRMS text-to-SQL assistant. Generate exactly one SQLite SELECT statement and nothing else. "
         "Use only tables and columns in the provided schema. Never request restricted columns or attempt to bypass "
         "the user's permissions. Do not use comments, semicolons, PRAGMA, or write operations. Use the listed "
-        "relationships to join tables; do not guess join keys. For skill expertise questions, join employees to "
+        "relationships to join tables; do not guess join keys. Never guess or hard-code an employee ID from a "
+        "person's name. When a person is identified by name, join the requested record table to employees using "
+        "the listed relationship and filter on employees.name case-insensitively. Use a numeric employee ID only "
+        "when the user explicitly gives that ID or when resolving the authenticated user's 'me'/'my' identity. "
+        "For skill expertise questions, join employees to "
         "employee_skills through employee_id, then to skills through skill_id and filter by skills.name or "
         "employee_skills.level. For permission violations, do not generate SQL or an empty sentinel query: "
         "return exactly one of these tokens instead: DENIED:OTHER_EMPLOYEE_INFO, DENIED:PAYROLL_DATA, "
@@ -57,10 +98,14 @@ def _build_system_prompt(role: Role, schema: str, employee_id: int | None = None
         "not refuse payroll queries as a category. Keep queries focused.\n\n"
         f"User role: {role.value}. {role_scope_description(role)}\n"
         f"{identity_context}"
+        f"{named_employee_context}"
         f"Employee skill search scope: {permissions.employee_skill_search_scope}. "
         f"Project assignment scope: {permissions.project_assignment_scope}. "
         f"Leave data scope: {permissions.leave_data_scope}. "
         f"Payroll access scope: {permissions.payroll_access}.\n"
+        "For case-insensitive employee name lookups, compare LOWER(employees.name) with LOWER(<name>) "
+        "or use COLLATE NOCASE; do not use case-sensitive equality for employee names. Preserve exact "
+        "case-sensitive enum values from the database guidance.\n"
         f"Database value and SQLite guidance:\n{sql_value_guidance()}\n"
         "Available scoped schema:\n"
         f"{schema}\n"
@@ -145,6 +190,12 @@ async def answer_sql_question(
 
     try:
         schema = get_scoped_schema(database_url, current_user.id, role)
+        named_employee_matches = get_scoped_employee_matches(
+            database_url,
+            current_user.id,
+            role,
+            message,
+        )
     except SQLGuardrailError as error:
         logger.error(
             "sql_agent_schema_unavailable",
@@ -154,7 +205,13 @@ async def answer_sql_question(
         )
         raise SQLAgentError("SQL_AGENT_DATABASE_UNAVAILABLE", str(error), 503) from None
 
-    system_prompt = _build_system_prompt(role, schema, current_user.id)
+    system_prompt = _build_system_prompt(
+        role,
+        schema,
+        current_user.id,
+        tuple(name for _, name in named_employee_matches),
+    )
+    named_employee_subject_name = _named_employee_subject_name(message, named_employee_matches)
 
     try:
         async with AsyncOpenAI(api_key=settings.openai_api_key) as client:
@@ -168,25 +225,35 @@ async def answer_sql_question(
                 ],
             )
             raw_sql = generated.choices[0].message.content or ""
-            if role == Role.MANAGER and _model_denial_code(raw_sql) == "OTHER_EMPLOYEE_INFO":
+            denial_code = _model_denial_code(raw_sql)
+            should_retry_manager_denial = role == Role.MANAGER and denial_code in {
+                "OTHER_EMPLOYEE_INFO", "PAYROLL_DATA"
+            }
+            should_retry_admin_denial = role == Role.ADMIN and denial_code == "OTHER_EMPLOYEE_INFO"
+            if should_retry_manager_denial or should_retry_admin_denial:
                 logger.info(
-                    "sql_agent_manager_team_refusal_retry",
+                    "sql_agent_role_scope_refusal_retry",
                     user_id=current_user.id,
                     role=role.value,
+                )
+                retry_instruction = (
+                    "\nThe request may be within the manager's direct-report payroll scope. Managers "
+                    "are allowed to query their own and direct-report payroll rows. Do not refuse only "
+                    "because payroll was requested or the request names another employee. Query "
+                    "employees joined to payroll_records by "
+                    "payroll_records.employee_id = employees.id and match the requested name. Both tables "
+                    "are already restricted by the server to this manager's team, so do not add an extra "
+                    "manager_id filter. Return the SELECT query; scoped execution will return zero rows if "
+                    "the named person is outside the permitted team."
+                    if role == Role.MANAGER
+                    else "\nThe authenticated user is an admin and may query all rows in allowed HR tables. "
+                    "Do not refuse a request merely because it concerns another employee. Generate a SELECT "
+                    "using only the supplied schema; do not request restricted fields."
                 )
                 retry_messages = [
                     {
                         "role": "system",
-                        "content": (
-                            system_prompt
-                            + "\nThe requested employee may be a direct report. Managers are explicitly allowed "
-                            "to query their own and direct-report payroll rows. Do not refuse only because the "
-                            "request names another employee. Query employees joined to payroll_records by "
-                            "payroll_records.employee_id = employees.id and match the requested name. Both tables "
-                            "are already restricted by the server to this manager's team, so do not add an extra "
-                            "manager_id filter. Return the SELECT query; scoped execution will return zero rows if "
-                            "the named person is outside the permitted team."
-                        ),
+                        "content": system_prompt + retry_instruction,
                     },
                     *history,
                     {"role": "user", "content": message},
@@ -211,12 +278,24 @@ async def answer_sql_question(
             502,
         ) from error
 
-    model_denial = _model_denial_code(raw_sql)
-    if model_denial is not None:
-        return _denied_result(role, model_denial)
+    if named_employee_subject_name and _EMPLOYEE_ID_QUESTION_PATTERN.search(message):
+        escaped_name = named_employee_subject_name.replace("'", "''")
+        raw_sql = (
+            "SELECT id, name FROM employees WHERE name = "
+            f"'{escaped_name}'"
+        )
+    else:
+        model_denial = _model_denial_code(raw_sql)
+        if model_denial is not None:
+            return _denied_result(role, model_denial)
 
     try:
-        safe_sql = clean_generated_sql(raw_sql, role)
+        safe_sql = clean_generated_sql(
+            raw_sql,
+            role,
+            named_employee_matches,
+            named_employee_subject_name,
+        )
         logger.info(
             "sql_agent_query_generated",
             user_id=current_user.id,
