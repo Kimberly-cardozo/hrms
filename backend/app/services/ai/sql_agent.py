@@ -30,6 +30,11 @@ _REPORT_SCOPE_PATTERN = re.compile(
     r"employees?\s+reporting\s+to|people\s+reporting\s+to)\b",
     re.IGNORECASE,
 )
+_PROJECT_ROLE_LIST_PATTERN = re.compile(
+    r"\b(?:what|which|list|show)\b.{0,60}\b(?:project\s+roles?|roles?\s+on\s+projects?)\b|"
+    r"\b(?:various|different|all)\s+project\s+roles?\b",
+    re.IGNORECASE,
+)
 _EXPLICIT_EMPLOYEE_ID_PATTERN = re.compile(r"\b(?:employee\s+)?id\s*[:#]?\s*\d+\b", re.IGNORECASE)
 _EMPLOYEE_ID_QUESTION_PATTERN = re.compile(
     r"\b(?:employees?|users?|persons?|staff(?:\s+members?)?)\s+(?:id|identifier)\b|"
@@ -285,6 +290,12 @@ async def answer_sql_question(
             f"'{escaped_name}'"
         )
     else:
+        if _PROJECT_ROLE_LIST_PATTERN.search(message) and not named_employee_subject_name:
+            raw_sql = (
+                "SELECT DISTINCT role_on_project FROM employee_projects "
+                "WHERE role_on_project IS NOT NULL ORDER BY role_on_project"
+            )
+
         model_denial = _model_denial_code(raw_sql)
         if model_denial is not None:
             return _denied_result(role, model_denial)

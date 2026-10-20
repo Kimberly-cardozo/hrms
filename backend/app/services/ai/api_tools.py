@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from typing import Any
 
 import httpx
@@ -92,13 +93,13 @@ ACTION_TOOL_DEFINITIONS = (
     ),
     _tool(
         "assign_employee_project",
-        "Assign an employee to a project. Manager/admin only. Always ask for confirmation first.",
+        "Assign an employee to a project by name; the server resolves names case-insensitively and accepts unique name-word matches, so exact capitalization and IDs are not needed. Manager/admin only. Always ask for confirmation first.",
         {
-            "employee_id": {"type": "integer"},
-            "project_id": {"type": "integer"},
+            "employee_name": {"type": "string"},
+            "project_name": {"type": "string"},
             "role_on_project": {"type": "string"},
         },
-        ["employee_id", "project_id"],
+        ["employee_name", "project_name"],
     ),
     _tool(
         "create_project",
@@ -328,6 +329,87 @@ async def _ensure_manager_leave_scope(access_token: str, manager_id: int, reques
         raise ActionToolError("You do not have permission to review leave requests outside your own or direct-report records.")
 
 
+def _normalized_name(value: Any) -> str:
+    return " ".join(str(value).split()).casefold()
+
+
+def _name_matches(items: Any, requested_name: str) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    normalized_requested_name = _normalized_name(requested_name)
+    valid_items = [
+        item
+        for item in items
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+    ]
+    exact_matches = [
+        item for item in valid_items if _normalized_name(item["name"]) == normalized_requested_name
+    ]
+    if exact_matches:
+        return exact_matches
+
+    requested_words = set(re.findall(r"\w+", normalized_requested_name))
+    if not requested_words:
+        return []
+    return [
+        item
+        for item in valid_items
+        if requested_words.issubset(set(re.findall(r"\w+", _normalized_name(item["name"]))))
+    ]
+
+
+async def resolve_employee_project_names(
+    arguments: dict[str, Any],
+    access_token: str,
+) -> dict[str, Any]:
+    employee_name = str(arguments.get("employee_name", "")).strip()
+    project_name = str(arguments.get("project_name", "")).strip()
+    if not employee_name or not project_name:
+        raise ActionToolError("Provide both an employee name and a project name.")
+
+    employee_data = await _request_api(
+        "GET",
+        "/api/v1/employees",
+        access_token,
+        params={"q": employee_name, "limit": 100, "offset": 0},
+    )
+    employee_items = employee_data.get("items", []) if isinstance(employee_data, dict) else []
+    employee_matches = _name_matches(employee_items, employee_name)
+    if not employee_matches:
+        raise ActionToolError("No active employee matched that exact name. Check the name and try again.")
+    if len(employee_matches) > 1:
+        raise ActionToolError(
+            "More than one employee has that name. Please provide a distinguishing detail, such as their department."
+        )
+
+    project_data = await _request_api(
+        "GET",
+        "/api/v1/employees/projects/catalog",
+        access_token,
+    )
+    project_items = project_data.get("items", []) if isinstance(project_data, dict) else project_data
+    project_matches = _name_matches(project_items, project_name)
+    if not project_matches:
+        raise ActionToolError("No project matched that exact name. Check the project name and try again.")
+    if len(project_matches) > 1:
+        raise ActionToolError(
+            "More than one project has that name. Please provide a distinguishing detail."
+        )
+
+    employee = employee_matches[0]
+    project = project_matches[0]
+    if not str(employee.get("id", "")).isdigit() or not str(project.get("id", "")).isdigit():
+        raise ActionToolError("The matched employee or project record is missing a valid ID.")
+    return {
+        "employee_id": int(employee["id"]),
+        "employee_name": employee["name"],
+        "project_id": int(project["id"]),
+        "project_name": project["name"],
+        "role_on_project": arguments.get("role_on_project"),
+    }
+
+
 async def execute_action_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -452,6 +534,14 @@ def tool_display_name(tool_name: str) -> str:
 
 def confirmation_summary(tool_name: str, arguments: dict[str, Any]) -> str:
     label = tool_display_name(tool_name)
+    if tool_name == "assign_employee_project":
+        details = [
+            f"employee: {arguments['employee_name']}",
+            f"project: {arguments['project_name']}",
+        ]
+        if arguments.get("role_on_project"):
+            details.append(f"role on project: {arguments['role_on_project']}")
+        return f"Confirm {label.lower()} ({'; '.join(details)})"
     safe_keys = (
         "leave_type", "start_date", "end_date", "is_half_day", "half_day_period", "reason",
         "ticket_id", "assignee_id", "status", "title", "description", "body",

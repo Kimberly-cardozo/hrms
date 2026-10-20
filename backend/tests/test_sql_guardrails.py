@@ -42,7 +42,7 @@ class SQLGuardrailsTests(unittest.TestCase):
                 """
                 CREATE TABLE employees (id INTEGER PRIMARY KEY, manager_id INTEGER, name TEXT, hashed_password TEXT, current_salary_usd NUMERIC);
                 CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT);
-                CREATE TABLE employee_projects (id INTEGER PRIMARY KEY, employee_id INTEGER, project_id INTEGER);
+                CREATE TABLE employee_projects (id INTEGER PRIMARY KEY, employee_id INTEGER, project_id INTEGER, role_on_project TEXT);
                 CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT);
                 CREATE TABLE skills (id INTEGER PRIMARY KEY, name TEXT);
                 CREATE TABLE employee_skills (id INTEGER PRIMARY KEY, employee_id INTEGER, skill_id INTEGER);
@@ -53,7 +53,7 @@ class SQLGuardrailsTests(unittest.TestCase):
                 CREATE TABLE payroll_records (id INTEGER PRIMARY KEY, employee_id INTEGER, gross REAL, net REAL, pan TEXT, pf_uan TEXT, esi_no TEXT);
                 INSERT INTO employees VALUES (1, NULL, 'Manager', 'secret', 100000), (2, 1, 'Report', 'secret', 80000), (3, NULL, 'Other', 'secret', 90000), (4, NULL, 'Employee User', 'secret', 70000), (5, NULL, 'Manager User', 'secret', 65000);
                 INSERT INTO projects VALUES (1, 'Alpha');
-                INSERT INTO employee_projects VALUES (1, 2, 1), (2, 3, 1);
+                INSERT INTO employee_projects VALUES (1, 2, 1, 'Engineer'), (2, 3, 1, 'Analyst');
                 INSERT INTO departments VALUES (1, 'Engineering');
                 INSERT INTO skills VALUES (1, 'Python');
                 INSERT INTO employee_skills VALUES (1, 2, 1), (2, 3, 1);
@@ -166,6 +166,16 @@ class SQLGuardrailsTests(unittest.TestCase):
         self.assertEqual([row["employee_id"] for row in employee_rows], [2])
         self.assertEqual([row["employee_id"] for row in manager_rows], [1, 2])
         self.assertEqual([row["employee_id"] for row in admin_rows], [1, 2, 3])
+
+    def test_distinct_project_roles_query_uses_scoped_assignments(self):
+        rows, _ = execute_scoped_select(
+            self.database_url,
+            1,
+            Role.ADMIN,
+            "SELECT DISTINCT role_on_project FROM employee_projects "
+            "WHERE role_on_project IS NOT NULL ORDER BY role_on_project",
+        )
+        self.assertEqual(rows, [{"role_on_project": "Analyst"}, {"role_on_project": "Engineer"}])
 
     def test_current_salary_field_remains_blocked_for_all_roles(self):
         schema = get_scoped_schema(self.database_url, 1, Role.ADMIN)
@@ -395,6 +405,22 @@ class SQLAgentResponseTests(unittest.TestCase):
         self.assertEqual(client.chat.completions.create.await_count, 2)
         executed_sql = execute_query.call_args.args[3]
         self.assertIn("name COLLATE NOCASE = 'Employee User'", executed_sql)
+
+    def test_project_roles_question_uses_deterministic_distinct_query(self):
+        result, client, execute_query = self.run_agent(
+            "SELECT 1 WHERE 0",
+            Role.MANAGER,
+            result_rows=[{"role_on_project": "AI Engineer"}],
+            message="What are various project roles?",
+        )
+        self.assertFalse(result["denied"])
+        self.assertEqual(result["rows"], [{"role_on_project": "AI Engineer"}])
+        self.assertEqual(client.chat.completions.create.await_count, 1)
+        self.assertEqual(
+            execute_query.call_args.args[3],
+            "SELECT DISTINCT role_on_project FROM employee_projects "
+            "WHERE role_on_project IS NOT NULL ORDER BY role_on_project",
+        )
 
     def test_manager_user_id_phrasings_use_scoped_name_lookup(self):
         for message in (
