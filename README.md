@@ -89,6 +89,8 @@ It is designed as a practical base for AI feature integration (RAG, assistants, 
 |-- docs/
 |   |-- api/
 |   |-- Learner_Guide.md
+|   |-- ai_permissions_matrix.md
+|   |-- ai_architecture.md
 |   |-- PRD.md
 |   `-- db_tables_samples.md
 |-- docker-compose.yml
@@ -108,7 +110,6 @@ First-time setup:
 
 ```bash
 git clone <repo-url>
-cd HRMS
 cp backend/.env.example backend/.env
 ```
 
@@ -257,7 +258,6 @@ docker-compose exec api python scripts/seed.py
 - Product requirements: [`PRD.md`](docs/PRD.md)
 - Database schema reference: [`db_tables_samples.md`](docs/db_tables_samples.md)
 - AI architecture, security, and known limitations: [`ai_architecture.md`](docs/ai_architecture.md)
-- AI assistants demo walkthrough: [`AI_AGENTS_DEMO.md`](docs/AI_AGENTS_DEMO.md)
 - AI permissions matrix: [`ai_permissions_matrix.md`](docs/ai_permissions_matrix.md)
 - AI API documentation: `docs/api/`
 
