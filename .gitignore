@@ -31,8 +31,11 @@ Thumbs.db
 
 # Keep only PRD markdown in repo root
 *.md
+!ai_architecture.md
+!ai_permissions_matrix.md
 !PRD.md
 !SOFTWARE_ENGINEER_LEARNER_GUIDE.md
+!README.md
 
 # Local runtime/build artifacts
 frontend/.next/
