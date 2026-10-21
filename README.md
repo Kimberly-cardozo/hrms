@@ -110,13 +110,17 @@ First-time setup:
 
 ```bash
 git clone <repo-url>
+cd <repository-name>
 cp backend/.env.example backend/.env
 ```
 
+Replace `<repository-name>` with the folder created by `git clone` (usually the repository's name).
 
 For PowerShell on Windows:
 
 ```powershell
+git clone <repo-url>
+Set-Location <repository-name>
 Copy-Item backend/.env.example backend/.env
 ```
 
